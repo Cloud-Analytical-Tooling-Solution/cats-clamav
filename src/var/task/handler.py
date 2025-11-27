@@ -125,10 +125,10 @@ def update_tags(bucket_name: str, object_key: str, status: str, detail: str = No
     }
 
     if status == "infected" and detail:
-        additional_tags["virus-name"] = detail
+        additional_tags["virus-name"] = str(detail)[:250]
     elif status == "error" and detail:
         # S3 tags cannot contain newlines, carriage returns, or tabs.
-        safe_error = detail.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').strip()
+        safe_error = str(detail).replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').strip()
 
         while "  " in safe_error:
             safe_error = safe_error.replace("  ", " ")
@@ -214,12 +214,12 @@ def validate_and_get_partner_path(bucket, batch_prefix, files_in_batch):
     # Find metadata file
     metadata_key = None
     for key in files_in_batch:
-        if key.endswith("metadata.yaml") or key.endswith("metadata.yml"):
+        if key.endswith("metadata.yaml"):
             metadata_key = key
             break
     
     if not metadata_key:
-        raise Exception("Partner upload missing required 'metadata.yaml' or 'metadata.yml' file.")
+        raise Exception("Partner upload missing required 'metadata.yaml' file.")
     
     # Download and parse metadata
     local_meta_path = f"/tmp/{os.path.basename(metadata_key)}"
@@ -232,13 +232,16 @@ def validate_and_get_partner_path(bucket, batch_prefix, files_in_batch):
             raise Exception(f"Invalid YAML in metadata file: {e}")
     
     # Validate fields
-    owner_info = meta_content.get("owner_classification", {})
+    if "owner_classification" not in meta_content:
+        raise Exception("Metadata missing required top-level field: 'owner_classification'.")
+
+    owner_info = meta_content["owner_classification"]
+    
+    if not owner_info:
+        raise Exception("Field 'owner_classification' cannot be empty.")
+
     table_name = owner_info.get("table_name")
     database = owner_info.get("database")
-    
-    # check root level if not found in owner_classification (just in case)
-    if not table_name: table_name = meta_content.get("table_name")
-    if not database: database = meta_content.get("database")
 
     if not table_name or not database:
         raise Exception("Metadata missing required fields: 'table_name' and 'database' must be non-null.")
@@ -321,7 +324,7 @@ def handler(event, context):
             if not files_to_process:
                 print(f"No data files found in batch prefix: {prefix}. Cleaning up commit file and folders.")
                 scan_results_map = {triggering_object_key: ("clean", None)}
-                move_and_tag_files(processed_bucket, scan_results_map)
+                move_and_tag_files(processed_bucket, scan_results_map, prefix, None)
                 for key in folder_keys_to_move:
                      print(f"Deleting clean folder object: {key}")
                      try: s3_client.delete_object(Bucket=landing_bucket, Key=key)
@@ -331,8 +334,6 @@ def handler(event, context):
 
             print(f"Processing batch. Prefix: {prefix}. Files: {list(files_to_process.keys())}")
 
-            if is_partner_upload:
-                new_partner_prefix = validate_and_get_partner_path(landing_bucket, prefix, files_to_process.keys())
 
             definition_download()
             os.makedirs("/tmp/clamav/scan", exist_ok=True)
@@ -342,9 +343,6 @@ def handler(event, context):
 
             for object_key in files_to_process.keys():
                 try:
-                    if object_key.endswith('_commit.json'):
-                        scan_results_map[object_key] = ("clean", None)
-                        continue
 
                     print(f"Scanning file: {object_key}")
                     local_file_path = f"/tmp/clamav/scan/{os.path.basename(object_key)}"
@@ -376,6 +374,21 @@ def handler(event, context):
                         print(f"ERROR: File {object_key} size ({size}) exceeds 5GB copy limit.")
                         scan_results_map[object_key] = ("error", "File exceeds 5GB copy limit")
                         is_batch_infected_or_error = True
+
+            # Validate Metadata after successful scan, only for partners
+            if not is_batch_infected_or_error and is_partner_upload:
+                try:
+                    new_partner_prefix = validate_and_get_partner_path(landing_bucket, prefix, files_to_process.keys())
+                except Exception as e:
+                    print(f"Metadata validation failed: {e}")
+                    is_batch_infected_or_error = True
+                    
+                    # Find the metadata file key to tag it with the specific error
+                    meta_key = next((k for k in files_to_process.keys() if k.endswith("metadata.yaml")), None)
+                    if meta_key:
+                        scan_results_map[meta_key] = ("error", str(e))
+                    else:
+                         print("Could not find metadata file to tag error.")
 
             if is_batch_infected_or_error:
                 print("Batch contains infected, errored, or oversized files. Moving all files to quarantine.")
