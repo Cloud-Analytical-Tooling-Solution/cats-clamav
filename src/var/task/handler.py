@@ -19,7 +19,7 @@ def run_command(command):
 def definition_upload():
     """Downloads latest ClamAV definitions, packages them, and uploads to S3."""
     try:
-        # Create the directory to store the definitions
+        # Create the directory to store the definitions 
         os.makedirs("/tmp/clamav/database", exist_ok=True)
         print("Downloading latest ClamAV definitions...")
 
