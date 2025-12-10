@@ -204,56 +204,54 @@ def move_and_tag_files(destination_bucket: str, scan_results_map: dict, batch_pr
                 print(f"FATAL: Could not move or tag {object_key}. Error: {e}")
                 traceback.print_exc()
 
-def validate_and_get_partner_path(bucket, batch_prefix, files_in_batch):
+def validate_and_get_partner_path(bucket, files_in_batch):
     """
-    Checks for metadata.yaml/yml, validates content, and returns new path prefix.
-    Returns: (new_prefix_string) or Raises Exception
+    New behavior: Use co-located _commit.json only.
+    - Open commit.json
+    - Ensure it parses and is non-null
+    - Find either 'yaml_key' or 'data_key' (error if neither)
+    - Return the directory prefix of that key (everything except filename),
+      ensuring it ends with '/'
     """
-    print("Partner upload detected. Validating metadata...")
-    
-    # Find metadata file
-    metadata_key = None
+    print("Partner upload detected. Resolving prefix from commit.json...")
+
+    # Find commit file in the same folder
+    commit_key = None
     for key in files_in_batch:
-        if key.endswith("metadata.yaml"):
-            metadata_key = key
+        if key.endswith("_commit.json"):
+            commit_key = key
             break
-    
-    if not metadata_key:
-        raise Exception("Partner upload missing required 'metadata.yaml' file.")
-    
-    # Download and parse metadata
-    local_meta_path = f"/tmp/{os.path.basename(metadata_key)}"
-    s3_client.download_file(bucket, metadata_key, local_meta_path)
-    
-    with open(local_meta_path, 'r') as f:
-        try:
-            meta_content = yaml.safe_load(f)
-        except yaml.YAMLError as e:
-            raise Exception(f"Invalid YAML in metadata file: {e}")
-    
-    # Validate fields
-    if "owner_classification" not in meta_content:
-        raise Exception("Metadata missing required top-level field: 'owner_classification'.")
 
-    owner_info = meta_content["owner_classification"]
-    
-    if not owner_info:
-        raise Exception("Field 'owner_classification' cannot be empty.")
+    if not commit_key:
+        raise Exception("Partner upload missing required '_commit.json' file.")
 
-    table_name = owner_info.get("table_name")
-    database = owner_info.get("database")
+    # Download and parse commit
+    local_commit_path = f"/tmp/{os.path.basename(commit_key)}"
+    s3_client.download_file(bucket, commit_key, local_commit_path)
 
-    if not table_name or not database:
-        raise Exception("Metadata missing required fields: 'table_name' and 'database' must be non-null.")
-    
-    # Construct new path
-    # Format: table_name/database/YYYY-MM-DD/uuid/
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    batch_uuid = str(uuid.uuid4())
-    new_prefix = f"{database}/{table_name}/{date_str}/{batch_uuid}/"
-    
-    print(f"Metadata valid. Constructed new path: {new_prefix}")
-    return new_prefix
+    try:
+        with open(local_commit_path, 'r') as cf:
+            commit_json = json.load(cf)
+    except Exception as e:
+        raise Exception(f"Invalid or unreadable _commit.json: {e}")
+
+    if not commit_json:
+        raise Exception("_commit.json is empty or null.")
+
+    # Prefer yaml_key, otherwise data_key
+    candidate_key = commit_json.get("yaml_key") or commit_json.get("data_key")
+    if not candidate_key:
+        raise Exception("_commit.json missing both 'yaml_key' and 'data_key'.")
+
+    # Extract directory prefix (everything except filename)
+    dir_prefix = os.path.dirname(candidate_key)
+    dir_prefix = (dir_prefix + "/") if dir_prefix and not dir_prefix.endswith("/") else dir_prefix
+
+    if not dir_prefix:
+        raise Exception("Could not derive directory prefix from commit keys.")
+
+    print(f"Commit-derived partner prefix: {dir_prefix}")
+    return dir_prefix
 
 def handler(event, context):
     """
