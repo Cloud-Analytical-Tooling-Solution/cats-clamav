@@ -204,7 +204,7 @@ def move_and_tag_files(destination_bucket: str, scan_results_map: dict, batch_pr
                 print(f"FATAL: Could not move or tag {object_key}. Error: {e}")
                 traceback.print_exc()
 
-def validate_and_get_partner_path(bucket, files_in_batch):
+def validate_and_get_partner_path(bucket, batch_prefix, files_in_batch):
     """
     New behavior: Use co-located _commit.json only.
     - Open commit.json
@@ -376,7 +376,7 @@ def handler(event, context):
             # Validate Metadata after successful scan, only for partners
             if not is_batch_infected_or_error and is_partner_upload:
                 try:
-                    new_partner_prefix = validate_and_get_partner_path(landing_bucket, prefix, files_to_process.keys())
+                    new_partner_prefix = validate_and_get_partner_path(landing_bucket, files_to_process.keys())
                 except Exception as e:
                     print(f"Metadata validation failed: {e}")
                     is_batch_infected_or_error = True
