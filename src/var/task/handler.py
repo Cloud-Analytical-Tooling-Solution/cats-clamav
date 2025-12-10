@@ -204,7 +204,7 @@ def move_and_tag_files(destination_bucket: str, scan_results_map: dict, batch_pr
                 print(f"FATAL: Could not move or tag {object_key}. Error: {e}")
                 traceback.print_exc()
 
-def validate_and_get_partner_path(bucket, batch_prefix, files_in_batch):
+def validate_and_get_partner_path(bucket, files_in_batch):
     """
     New behavior: Use co-located _commit.json only.
     - Open commit.json
